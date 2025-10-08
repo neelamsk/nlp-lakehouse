@@ -1,0 +1,40 @@
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+*.env
+*.ipynb_checkpoints
+.pytest_cache/
+.coverage*
+dist/
+build/
+
+# dbt
+dbt/target/
+dbt/logs/
+
+# Databricks / notebooks (project-local artifacts)
+.databricks/
+**/.ipynb_checkpoints/
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/.terraform.lock.hcl
+
+# Secrets (be careful to never commit keys)
+*.key
+*.pem
+*.p12
+*.cer
+*.crt
