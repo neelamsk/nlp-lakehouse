@@ -1,0 +1,11 @@
+GRANT USAGE ON CATALOG nlp_dev TO `account users`;
+GRANT USAGE ON SCHEMA nlp_dev.bronze TO `account users`;
+GRANT CREATE, SELECT, MODIFY ON SCHEMA nlp_dev.bronze TO `account users`;
+GRANT USAGE ON SCHEMA nlp_dev.silver TO `account users`;
+GRANT CREATE, SELECT, MODIFY ON SCHEMA nlp_dev.silver TO `account users`;
+GRANT USAGE ON SCHEMA nlp_dev.gold TO `account users`;
+GRANT CREATE, SELECT, MODIFY ON SCHEMA nlp_dev.gold TO `account users`;
+GRANT USAGE ON SCHEMA nlp_dev.ml TO `account users`;
+GRANT CREATE, SELECT, MODIFY ON SCHEMA nlp_dev.ml TO `account users`;
+GRANT USAGE ON SCHEMA nlp_dev.agents TO `account users`;
+GRANT CREATE, SELECT, MODIFY ON SCHEMA nlp_dev.agents TO `account users`;
