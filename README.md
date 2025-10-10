@@ -130,6 +130,18 @@ INSERT INTO test_delta VALUES (1, 'hello uc');
 SELECT * FROM test_delta;
 ```
 
+### Credential strategy: workspace default vs. managed identity (recommended)
+
+**Two ways UC reaches storage:**
+- **Workspace default credential** (Databricks-managed): quick for PoC; scope-limited to a Databricks path (e.g., `...unity-catalog-storage@dbstorage...`). Not ideal for real projects.
+- **Storage Credential via Azure Databricks Access Connector (Managed Identity)** ← **Recommended**
+  - We create a Storage Credential (e.g., `cred_nlp_azmi`) that uses the Access Connector (Resource ID).
+  - We create an External Location (e.g., `nlp_root`) that points to **our** ADLS Gen2 container/prefix.
+  - Each schema gets a **managed location** matching our layers (`/bronze`, `/silver`, `/gold`, `/ml`, `/agents`).
+
+**Why this is best practice:** least-privilege RBAC/ACLs on *our* storage, portable data (no vendor path), clean folder layout, easy ops & compliance.
+
+
 ### 2) Secrets (Key Vault + Databricks scope)
 - Create **Key Vault**, enable purge protection/soft delete.  
 - Add secrets you’ll need (OpenAI key later, optional service principal).  
@@ -300,6 +312,33 @@ with mlflow.start_run():
 - **Delta Lake / Delta table:** Parquet files + `_delta_log` = ACID + time travel.  
 - **MLflow:** Experiment tracking, model registry.  
 - **Autoloader:** Incremental file discovery for streaming/batch ingress.
+
+---
+
+**Troubleshooting – “wrong credential (nlp_databricks) used”**
+- **Symptom:**  
+  `PERMISSION_DENIED: credential 'nlp_databricks' ... only allowed to access ... unity-catalog-storage@dbstorage...`
+- **Cause:** External Location was created with the workspace default credential, so UC uses that instead of our MI.
+- **Fix (what we did):**
+  1. Create **Storage Credential** with the **Access Connector (Resource ID)** → `cred_nlp_azmi`.
+  2. Create **External Location** → `nlp_root` using `cred_nlp_azmi`.
+  3. Grant UC access:  
+     ```sql
+     GRANT READ FILES, WRITE FILES ON EXTERNAL LOCATION nlp_root TO `account users`; 
+     -- or to your UPN from: SELECT current_user();
+     ```
+     *(Metastore privilege v1.0 doesn’t need/allow `USAGE` on storage credential.)*
+  4. If an old External Location was tied to the default credential and blocked by dependencies, **drop schemas/tables** or **Force delete** the location, then recreate it with `cred_nlp_azmi`.
+  5. Ensure schema **managed locations** map to folders (do this at create time if ALTER isn’t supported):
+     ```sql
+     CREATE SCHEMA IF NOT EXISTS nlp_dev.bronze
+       MANAGED LOCATION 'abfss://nlp@<storage_account>.dfs.core.windows.net/bronze/';
+     ```
+  6. Verify a table’s physical location:  
+     ```sql
+     DESCRIBE DETAIL nlp_dev.bronze.some_table;  -- see 'location'
+     ```
+
 
 ---
 
