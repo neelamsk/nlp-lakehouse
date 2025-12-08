@@ -1,16 +1,45 @@
 # NLP Lakehouse (Azure Databricks + Unity Catalog + Delta on ADLS)
 
-> **Goal:** An interview‑ready, cost‑aware NLP project that processes **1–5M+ documents** end‑to‑end on Azure Databricks with **Unity Catalog (UC)**, **Delta Lake** on ADLS Gen2, **MLflow** model tracking/registry, **dbt** Gold marts, and a small **Ops Copilot** agent for drift/cost insights. Built for portfolio credibility and repeatability.
+End-to-end NLP lakehouse on Azure Databricks that processes **millions of Amazon reviews** using **Unity Catalog**, **Delta Lake on ADLS Gen2**, **MLflow**, **dbt**, and a first-cut **Ops Agent** for model monitoring.
+
+Built to be:
+- Honest about scale: real multi-million row text dataset.
+- Modern: Unity Catalog, external Delta on ADLS (no DBFS mounts).
+- Governed: dbt Gold layer for analytics, tests, and documentation.
+- Interview-ready: clear phases, clean repo layout, and repeatable patterns.
 
 ---
 
-## Why this project?
-- **Real scale:** Truthfully say you processed *millions* of texts.
-- **Modern lakehouse:** UC governance + Delta tables on ADLS (no lock‑in, no DBFS mounts).
-- **Ops maturity:** MLflow registry, drift checks (PSI/KL), cost metrics, and agent recommendations.
-- **Analytics storytelling:** dbt marts + dashboard screenshots (latency, accuracy, drift, cost/1k preds).
+## 1. What this project is now (Final Snapshot)
 
----
+### 🧱 Data & Lakehouse
+
+**Storage**
+
+- ADLS Gen2 account with container: `nlp`
+- Folder layout inside container:
+  - `raw/`
+  - `bronze/`
+  - `silver/`
+  - `gold/`
+  - `ml/`
+  - `agents/`
+
+**Compute & Governance**
+
+- Azure Databricks workspace
+- Unity Catalog:
+  - Catalog: `nlp_databricks`
+  - Schema: `nlp_dev`
+    - `nlp_dev.bronze`
+    - `nlp_dev.silver`
+    - `nlp_dev.gold` (plus `gold_gold` for dbt outputs)
+    - `nlp_dev.ml`
+    - `nlp_dev.agents`
+
+All core tables are **Delta** tables, backed by **abfss://** paths in ADLS.
+
+
 
 ## Architecture (high level)
 **Azure**: *Databricks (Workflows/Jobs, MLflow, UC) + ADLS Gen2 (HNS) + Key Vault + (optional) SQL Warehouse for dbt/BI.*
@@ -39,322 +68,439 @@ Dataset   | (Autoloader)   |      +--------------------+
                             (dbt models)   (BI KPI)      (Agent: drift/cost)
 ```
 
-> **Note:** We will use **abfss://** URIs to read/write ADLS paths; **no DBFS mounts**. UC provides the catalog/schemas and secure external locations.
-
 ---
 
-## Tech Stack
-- **Compute**: Azure Databricks (Workflows/Jobs, MLflow, UC)
-- **Storage**: ADLS Gen2 + Delta Lake (ACID, time travel, OPTIMIZE/Z‑ORDER later)
-- **Governance**: Unity Catalog (catalog/schema/tables, external locations, grants)
-- **Secrets**: Azure Key Vault (Databricks secret scope)
-- **Analytics**: dbt (dbt‑databricks) → optional SQL Warehouse (stopped by default), Power BI/DB SQL dashboards
-- **Models**: Baseline TF‑IDF + Logistic Regression; stretch: DistilBERT
-- **Agent**: Small LLM (Azure OpenAI “small/mini”) for Ops Copilot (summaries, drift/cost hints)
+## 2. Data Flow & Tables
 
----
+### 📥 Raw → Bronze
 
-## Project Phases (with acceptance checks)
-- **Phase 0 – Foundations** (this README, infra wiring)
-  - 0.1 New subscription + RG + budget ✅
-  - 0.2 ADLS Gen2 + `nlp` container + `/raw /silver /gold /ml /agents /scratch` ✅
-  - 0.3 Databricks + **Unity Catalog** (Access Connector → Storage Credential → External Location → Catalog/ Schemas) ☐
-  - 0.4 Key Vault + secret scope + `dbutils.secrets.get` smoke test ☐
-  - 0.5 Cluster policy (auto‑terminate 10 min, tiny nodes, autoscale 1‑2) ☐
-  - 0.6 MLflow smoke test (log param/metric/artifact) ☐
-- **Phase 1 – Ingest & Explore**
-  - Choose dataset (e.g., **Amazon Reviews JSONL**, or **AG News**); land to `/raw` ☐
-  - Autoloader to **Bronze Delta**, schema inference, incremental ☐
-  - EDA (lengths, nulls, class balance) ☐
-- **Phase 2 – Clean & Persist (Silver)**
-  - Text cleaning (lowercase, punct, stopwords; optional lemmatization) ☐
-  - Partition by date; write Silver ☐
-- **Phase 3 – Features & Baseline**
-  - TF‑IDF + Logistic Regression (or LightGBM) ☐
-  - MLflow log + register; batch inference → predictions table ☐
-- **Phase 4 – Gold & dbt**
-  - Build marts: `reviews_daily`, `model_perf_daily`, `inference_latency_daily`, `agent_actions_log` ☐
-- **Phase 5 – Agent (Ops Copilot)**
-  - Summarize latest runs; flag imbalance/drift; recommend next steps ☐
-- **Phase 6 – Scale & Performance**
-  - OPTIMIZE/Z‑ORDER (targeted), caching, broadcast joins; show before/after ☐
-- **Phase 7 – Production Metrics**
-  - Persist p50/p95 latency, cost/1k preds, drift days, agent response time ☐
-- **Phase 8 – Cost Optimizer & Auto‑Retrain**
-  - Drift stats; accuracy vs cost trade‑off; propose cheaper model if Δacc < 2% ☐
-- **Phase 9 – Observability & Docs**
-  - Dashboards & screenshots; curated README KPIs ☐
-- **Phase 10 – Stretch**
-  - Real **Kafka** streaming (self‑managed) ☐
-  - **DistilBERT** accuracy vs cost demo ☐
-  - **RAG Copilot** for FAQs in a subset class ☐
+**Source**
 
----
+- fastText-format **Amazon Reviews** text:
+  - `__label__X` followed by free text review
+  - Multi-million rows (sliced for experimentation)
 
-## Repository Layout (evolving)
-> You’re starting with just this folder. We’ll add folders as we build.
-```
-nlp-lakehouse/
-  README.md                 <-- this file
-  databricks/               <-- notebooks, SQL, jobs (added later)
-  src/                      <-- python libs (drift, cost, utils)
-  dbt/                      <-- models, tests, docs (analytics)
-  infra/                    <-- terraform/bicep (optional, later)
-  docs/                     <-- arch diagram, KPIs, screenshots
-```
+**Notebook: `01_ingest_bronze`**
 
----
+- Reads raw text files from:
+  - `abfss://nlp@<storage>.dfs.core.windows.net/raw/amazon_reviews/...`
+- Parses:
+  - `label` from `__label__X`
+  - `text` from remainder of the line
+- Writes Delta table:
 
-## Step‑by‑Step Setup (Concise Runbook)
-
-### 1) Unity Catalog wiring (after workspace is created)
-1. **Create Access Connector** (Azure Databricks Access Connector) in the same RG/region.  
-2. On the storage account (e.g., `nlplakeadls001`), grant the connector **Storage Blob Data Contributor** (IAM).  
-3. In Databricks **Account Console / Data**:
-   - **Storage Credential**: type *Azure managed identity*, pick the Access Connector.  
-   - **External Location**: `abfss://nlp@<account>.dfs.core.windows.net/` using that credential.  
-   - **Metastore**: create (East US 2) if needed and **attach** workspace.  
-   - **Catalog**: `nlp_dev`.  
-   - **Schemas** with managed locations (optional but tidy):  
-     - `nlp_dev.bronze` → `abfss://nlp@<account>.dfs.core.windows.net/bronze/`  
-     - `nlp_dev.silver` → `.../silver/`, etc.
-
-**SQL smoke test**
 ```sql
-USE CATALOG nlp_dev;
-CREATE SCHEMA IF NOT EXISTS bronze;
-USE SCHEMA bronze;
-
-CREATE TABLE IF NOT EXISTS test_delta (id INT, txt STRING) USING DELTA;
-INSERT INTO test_delta VALUES (1, 'hello uc');
-SELECT * FROM test_delta;
+nlp_databricks.nlp_dev.bronze.fasttext_bronze
 ```
 
-### Credential strategy: workspace default vs. managed identity (recommended)
+> Bronze = minimally processed, schema-on-read turned into schema-on-write.
 
-**Two ways UC reaches storage:**
-- **Workspace default credential** (Databricks-managed): quick for PoC; scope-limited to a Databricks path (e.g., `...unity-catalog-storage@dbstorage...`). Not ideal for real projects.
-- **Storage Credential via Azure Databricks Access Connector (Managed Identity)** ← **Recommended**
-  - We create a Storage Credential (e.g., `cred_nlp_azmi`) that uses the Access Connector (Resource ID).
-  - We create an External Location (e.g., `nlp_root`) that points to **our** ADLS Gen2 container/prefix.
-  - Each schema gets a **managed location** matching our layers (`/bronze`, `/silver`, `/gold`, `/ml`, `/agents`).
+---
 
-**Why this is best practice:** least-privilege RBAC/ACLs on *our* storage, portable data (no vendor path), clean folder layout, easy ops & compliance.
+### 🧼 Bronze → Silver
 
+**Notebook: `02_clean_silver`**
 
-### 2) Secrets (Key Vault + Databricks scope)
-- Create **Key Vault**, enable purge protection/soft delete.  
-- Add secrets you’ll need (OpenAI key later, optional service principal).  
-- In Databricks, create a **secret scope** (Key Vault‑backed preferred) and test:
-```python
-dbutils.secrets.get(scope="kv-nlp", key="openai-api-key")  # example later
+- Normalizes text:
+  - Lowercase
+  - Punctuation removal
+  - Whitespace cleanup
+- Adds simple features:
+  - `word_count`
+  - `char_count`
+- Filters out:
+  - Reviews that are too short
+  - Reviews that are too long / clearly noisy
+- Writes cleaned Delta table:
+
+```sql
+nlp_databricks.nlp_dev.silver.fasttext_silver
 ```
 
-### 3) Cluster policy (guardrail)
-- **Auto‑terminate 10 min**, **autoscale 1–2 workers**, small node (e.g., `Standard_DS3_v2` or smallest available), **spot workers** allowed for dev.  
-- Use **Jobs** compute rather than interactive clusters for pipelines.
+- Runs:
+  - `OPTIMIZE` + `ZORDER` (on relevant columns) to improve performance
 
-### 4) MLflow smoke test
-```python
-import mlflow
-with mlflow.start_run():
-    mlflow.log_param("hello", "world")
-    mlflow.log_metric("accuracy", 0.99)
-# Verify in Experiments UI
+> Silver = cleaned, filtered, and lightly featured text ready for modeling.
+
+---
+
+### 🪙 Silver → Gold (Features + Splits)
+
+**Notebook: `03_gold_features`**
+
+- Reads:
+
+```sql
+SELECT * FROM nlp_databricks.nlp_dev.silver.fasttext_silver
+```
+
+- Processing:
+  - Tokenizes text
+  - Computes TF-IDF features into a `tfidf_features` vector column (Spark ML)
+  - Encodes labels into numeric form
+  - Adds `split` column with values:
+    - `train`
+    - `val`
+    - `test`
+
+- Writes feature table:
+
+```sql
+nlp_databricks.nlp_dev.gold.fasttext_gold
+```
+
+> Gold (feature layer) = single source of truth for train/val/test splits.
+
+---
+
+## 3. Model & MLflow
+
+### 🧠 Baseline Model: Logistic Regression
+
+**Notebook: `04_train_lr_baseline`**
+
+- Reads Gold feature table
+- Splits into:
+  - `df_train`, `df_val`, `df_test` (by `split` column)
+- Trains a **Logistic Regression classifier** using **Spark ML** on TF-IDF vectors
+- Evaluates:
+  - Accuracy
+  - F1 (overall and per label where helpful)
+- Tracks with **MLflow**:
+  - Parameters (regularization, features, etc.)
+  - Metrics (accuracy, F1)
+  - Model artifact
+
+**Model registry**
+
+- Registers model in Unity Catalog:
+
+```sql
+nlp_databricks.nlp_dev.ml.fasttext_sentiment_lr
+```
+
+Model is versioned and ready to serve / batch-score.
+
+---
+
+### 📦 Batch Inference
+
+**Notebook: `05_batch_inference`**
+
+- Loads latest `fasttext_sentiment_lr` version from UC model registry
+- Runs batch inference on:
+  - Full `fasttext_gold` table, or
+  - A chosen slice for experimentation
+- Writes predictions to Delta table:
+
+```sql
+nlp_databricks.nlp_dev.ml.fasttext_predictions
+```
+
+Columns typically include:
+- `text`
+- `true_label`
+- `pred_label`
+- Prediction confidence / probability vector
+- Inference timestamps
+
+> This table is the bridge between ML and analytics: dbt uses it as a source.
+
+---
+
+## 4. Analytics & dbt Layer
+
+This lives in a **separate repo**:
+
+- Repo name (example): `nlp_lakehouse_analytics`
+- Engine: **dbt** with `dbt-databricks`
+
+### 🔌 Sources
+
+`models/sources.yml` defines:
+
+```yml
+sources:
+  - name: ml
+    database: nlp_databricks
+    schema: nlp_dev.ml
+    tables:
+      - name: fasttext_predictions
+```
+
+So dbt sees:
+
+```sql
+source('ml', 'fasttext_predictions') -> nlp_databricks.nlp_dev.ml.fasttext_predictions
 ```
 
 ---
 
-## Ingestion & Bronze (Autoloader)
-Example (JSONL reviews) – replace path with your dataset:
-```python
-from pyspark.sql.functions import input_file_name, current_timestamp
+### 🧮 Models
 
-raw_path = "abfss://nlp@<account>.dfs.core.windows.net/raw/amazon_reviews/"
-bronze_path = "abfss://nlp@<account>.dfs.core.windows.net/bronze/amazon_reviews/"
+#### 1) `fact_sentiment_confusion.sql`
 
-df = (spark.readStream
-      .format("cloudFiles")
-      .option("cloudFiles.format", "json")
-      .option("cloudFiles.inferColumnTypes", "true")
-      .load(raw_path))
+- Aggregates predictions into a confusion matrix:
 
-df = df.withColumn("_ingested_at", current_timestamp()) \
-       .withColumn("_source_file", input_file_name())
-
-(df.writeStream
-   .format("delta")
-   .option("checkpointLocation", bronze_path + "_checkpoint")
-   .outputMode("append")
-   .start(bronze_path))
-```
-- Use **`cloudFiles`** (Autoloader) for incremental discovery & schema evolution.
-- For **batch**, replace `readStream`/`writeStream` with `read`/`write`.
-
----
-
-## Silver Cleaning (example)
-```python
-from pyspark.sql import functions as F
-
-bronze = "abfss://nlp@<account>.dfs.core.windows.net/bronze/amazon_reviews/"
-silver = "abfss://nlp@<account>.dfs.core.windows.net/silver/amazon_reviews/"
-
-df = spark.read.format("delta").load(bronze)
-
-clean = (df
-  .withColumn("text", F.lower(F.col("reviewText")))
-  .withColumn("text", F.regexp_replace("text", r"[^\w\s]", " "))
-  .filter(F.length("text") > 20))
-
-(clean.write
-   .format("delta")
-   .mode("overwrite")
-   .option("overwriteSchema", "true")
-   .save(silver))
+```sql
+SELECT
+  true_label,
+  pred_label,
+  COUNT(*) AS review_count
+FROM {{ source('ml', 'fasttext_predictions') }}
+GROUP BY true_label, pred_label
 ```
 
+- Materializes as:
+
+```sql
+nlp_databricks.nlp_dev.gold_gold.fact_sentiment_confusion
+```
+
+#### 2) `fact_sentiment_summary.sql`
+
+- Uses CTEs:
+  - `base`
+  - `per_class`
+  - `overall`
+- Computes:
+  - Per-class accuracy
+  - Overall accuracy
+- Materializes as:
+
+```sql
+nlp_databricks.nlp_dev.gold_gold.fact_sentiment_summary
+```
+
+### ✅ Tests
+
+`schema.yml` includes:
+
+- `not_null` tests on key columns:
+  - `true_label`
+  - `pred_label`
+  - `review_count`
+  - Accuracy columns
+
+`dbt test` → all current tests passing.
+
+> dbt represents the **governed analytics layer** on top of ML outputs: repeatable SQL, version control, and tests.
+
 ---
 
-## Baseline Features & Model (MLflow)
-```python
-import mlflow, mlflow.sklearn
-from pyspark.sql.functions import col
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import f1_score, accuracy_score
-from sklearn.model_selection import train_test_split
-import pandas as pd
+## 5. Agent Layer (Ops Copilot v0)
 
-pdf = spark.read.format("delta").load(silver).select("text","label").dropna().toPandas()
-X_train, X_test, y_train, y_test = train_test_split(pdf.text, pdf.label, test_size=0.2, random_state=42)
+Agent logic lives in the **`nlp_dev.agents`** schema.
 
-pipe = Pipeline([("tfidf", TfidfVectorizer(max_features=200000)),
-                 ("lr", LogisticRegression(max_iter=200))])
+### 📈 `agents.model_metrics`
 
-with mlflow.start_run():
-    pipe.fit(X_train, y_train)
-    preds = pipe.predict(X_test)
-    acc = accuracy_score(y_test, preds)
-    f1 = f1_score(y_test, preds, average="weighted")
-    mlflow.log_metric("accuracy", acc)
-    mlflow.log_metric("f1_weighted", f1)
-    mlflow.sklearn.log_model(pipe, "model", registered_model_name="nlp_baseline_tfidf_lr")
+**Notebook: `06_agent_metrics`**
+
+- Reads:
+  - MLflow metrics
+  - dbt summary / confusion tables
+- Stores rows in:
+
+```sql
+nlp_databricks.nlp_dev.agents.model_metrics
+```
+
+Schema (conceptually):
+
+- `model_name`
+- `model_version`
+- `run_id`
+- `metric_scope` (e.g., `val`, `test`)
+- `overall_accuracy`
+- Per-label metrics
+- `created_at`
+
+> This acts as a time-series log of model performance across runs.
+
+---
+
+### 🧠 `agents.ops_reports`
+
+**Notebook: `07_agent_ops_report`**
+
+- Reads:
+  - Latest `agents.model_metrics`
+  - Gold analytics tables (`fact_sentiment_confusion`, `fact_sentiment_summary`)
+- Builds a context dict
+- Passes it through a small **rule-based “agent brain”** (`build_ops_summary`) that:
+  - Classifies performance tier (`excellent`, `good`, `concerning`)
+  - Sets `needs_retrain` flag
+  - Generates a human-readable `summary_text`
+  - Produces a `flags` dict (e.g., classes with low accuracy)
+
+- Writes a row into:
+
+```sql
+nlp_databricks.nlp_dev.agents.ops_reports
+```
+
+Typical columns:
+
+- `report_id`
+- `generated_at`
+- `model_name`, `model_version`, `run_id`
+- `overall_accuracy`
+- `summary_text`
+- `flags_json`
+
+> This is an **agent-ready monitoring layer**: you already have an observe → decide → log loop. Swapping the rule engine for an LLM later is straightforward.
+
+---
+
+### 📊 `agents.prediction_stats` (Drift foundation)
+
+**Notebook: `08_agent_prediction_stats`**
+
+- Aggregates prediction stats:
+  - By date
+  - By label
+  - By predicted label
+- Writes to:
+
+```sql
+nlp_databricks.nlp_dev.agents.prediction_stats
+```
+
+This table is the foundation for:
+- Drift analysis
+- Stability and volume monitoring
+- Future agent rules/LLM prompts around drift & cost.
+
+---
+
+## 6. Repos & Structure
+
+### Repo 1: `nlp-lakehouse` (Databricks / ML / Agents)
+
+Suggested layout:
+
+```text
+nlp-lakehouse/
+  README.md
+  databricks/
+    01_ingest_bronze
+    02_clean_silver
+    03_gold_features
+    04_train_lr_baseline
+    05_batch_inference
+    06_agent_metrics
+    07_agent_ops_report
+    08_agent_prediction_stats
+  docs/
+    architecture.md
+    screenshots/
+      mlflow_runs.png
+      uc_model_registry.png
+      delta_tables.png
+      agent_ops_report_sample.png
+```
+
+### Repo 2: `nlp_lakehouse_analytics` (dbt)
+
+```text
+nlp_lakehouse_analytics/
+  README.md
+  dbt_project.yml
+  models/
+    sources.yml
+    schema.yml
+    fact_sentiment_confusion.sql
+    fact_sentiment_summary.sql
+  .gitignore             # exclude profiles.yml
 ```
 
 ---
 
-## Gold & dbt (marts)
-**Target marts:**
-- `reviews_daily` (counts, avg length)
-- `model_perf_daily` (accuracy, F1, loss)
-- `inference_latency_daily` (p50/p95 latency)
-- `agent_actions_log` (recommended vs applied, outcome)
+## 7. How to Run (High-level)
 
-> Keep your **SQL Warehouse OFF** when not querying to control cost.
+1. **Prereqs**
+   - Databricks workspace with Unity Catalog enabled
+   - UC catalog `nlp_databricks` and schema `nlp_dev`
+   - ADLS Gen2 container `nlp` wired as an external location
+   - Cluster with:
+     - Auto-terminate (10–15 min)
+     - 1–2 small workers
 
----
+2. **Ingest**
+   - Upload fastText Amazon reviews into:
+     - `raw/amazon_reviews/`
+   - Run `01_ingest_bronze` → creates `bronze.fasttext_bronze`
 
-## Ops Copilot (small agent)
-- Pull latest MLflow runs (metrics, tags).  
-- Check **class imbalance** and **drift** (PSI/KL) from Silver→Gold stats.  
-- Draft **next steps**: retrain, adjust batch size, consider cheaper model if Δacc < 2%.  
-- Persist outputs to `gold.agent_actions_log` for BI.
+3. **Clean**
+   - Run `02_clean_silver` → creates `silver.fasttext_silver`
 
----
+4. **Features & Splits**
+   - Run `03_gold_features` → creates `gold.fasttext_gold`
 
-## KPIs to publish in README (replace with your real numbers)
-- **Docs processed:** 5.3M  
-- **Baseline:** TF‑IDF + LR → **Accuracy 92.1% / F1 0.91**  
-- **Batch ingest p95 latency:** 7.8 min / day partition  
-- **Cost/1k predictions:** \$0.0X (VM + DBU calc)  
-- **Drift detection days:** 6/90 days (6.7%)  
-- **Agent recommendations applied:** 12, **80%** success
+5. **Train & Register Model**
+   - Run `04_train_lr_baseline` → MLflow run + UC model registered
 
----
+6. **Batch Inference**
+   - Run `05_batch_inference` → writes `ml.fasttext_predictions`
 
-## Cost Controls
-- **Jobs clusters** only, **auto‑terminate 10 min**, **autoscale 1–2**, **small nodes**, **spot workers** for dev.  
-- **Optimize** only hot partitions; avoid blanket Z‑ORDER.  
-- Keep **SQL Warehouse stopped**.  
-- Azure **Budgets + alerts** at subscription/RG scope.
+7. **dbt Analytics**
+   - In `nlp_lakehouse_analytics`:
+     - `dbt debug`
+     - `dbt run`
+     - `dbt test`
+   - Confusion and summary tables created in `gold_gold` schema
 
----
-
-## Security & Governance
-- **RBAC**: Storage Blob Data Contributor to the **Access Connector** only.  
-- **ACLs**: root container + default ACLs for inheritance.  
-- **Unity Catalog**: grants on catalog/schemas; optional row/column controls.  
-- **Secrets**: Key Vault–backed secret scope; no creds in code.  
-- **Audit**: enable storage **change feed** and soft delete; keep MLflow run logs.
+8. **Agent Metrics & Reports**
+   - Run `06_agent_metrics` → populate `agents.model_metrics`
+   - Run `07_agent_ops_report` → populate `agents.ops_reports`
+   - Run `08_agent_prediction_stats` (optional) → populate `agents.prediction_stats`
 
 ---
 
-## CI/CD & Automation (later)
-- **GitHub Actions**:
-  - Lint & unit tests → build → **databricks CLI** or **Databricks Asset Bundles** to deploy jobs/notebooks.  
-  - **dbt**: run tests, build docs, publish artifacts (screenshots to `/docs`).  
-- **Terraform** (optional): UC objects (catalog, schemas, credentials, external locations), secret scopes, cluster policies.
+## 8. Cost & Ops Notes
+
+- Use **Jobs** clusters or small interactive clusters with:
+  - Auto-terminate
+  - Minimal workers
+- Only **OPTIMIZE** on frequently-queried tables; avoid blanket Z-ORDER.
+- Keep any **SQL Warehouse** stopped if you’re not actively using it.
+- Subscription-level **budget + alerts** recommended if this runs regularly.
 
 ---
 
-## Resume / Portfolio snippet
-- “Built an Azure Databricks + Unity Catalog NLP lakehouse (Delta on ADLS). Processed **5M+** documents, logged models in MLflow, added dbt Gold marts & a small Ops Copilot for drift/cost actions. **Accuracy 92%**, **cost/1k preds –38%**, **p95 batch latency 7.8 min**.”
+## 9. How to talk about this in interviews
+
+Example one-liner:
+
+> “I built an NLP lakehouse on Azure Databricks with Unity Catalog, processing multi-million Amazon reviews into Delta tables on ADLS, trained a TF-IDF + Logistic Regression baseline with MLflow tracking, layered dbt marts on top, and added an Ops Agent table that logs model performance and retrain recommendations.”
+
+Key talking points:
+
+- UC + external locations, **no DBFS mounts**
+- Clear **Bronze / Silver / Gold / ML / Agents** separation
+- MLflow + UC model registry usage
+- dbt tests and confusion/summary marts
+- Agent pattern: `model_metrics` → `ops_reports` (observe → decide → log)
+- Ready for future:
+  - LLM-powered Ops Copilot
+  - DistilBERT vs LR comparison
+  - Drift and cost optimization logic
 
 ---
 
-## Glossary (quick)
-- **Unity Catalog (UC):** Cross‑workspace governance & catalog for Databricks.  
-- **Hive Metastore:** Legacy per‑workspace metastore.  
-- **DBFS:** Databricks virtual filesystem; we **don’t** mount ADLS here.  
-- **ABFS/abfss://:** Connector/URI for ADLS Gen2 (TLS with `abfss://`).  
-- **Delta Lake / Delta table:** Parquet files + `_delta_log` = ACID + time travel.  
-- **MLflow:** Experiment tracking, model registry.  
-- **Autoloader:** Incremental file discovery for streaming/batch ingress.
+## 10. Roadmap / Stretch
 
----
-
-**Troubleshooting – “wrong credential (nlp_databricks) used”**
-- **Symptom:**  
-  `PERMISSION_DENIED: credential 'nlp_databricks' ... only allowed to access ... unity-catalog-storage@dbstorage...`
-- **Cause:** External Location was created with the workspace default credential, so UC uses that instead of our MI.
-- **Fix (what we did):**
-  1. Create **Storage Credential** with the **Access Connector (Resource ID)** → `cred_nlp_azmi`.
-  2. Create **External Location** → `nlp_root` using `cred_nlp_azmi`.
-  3. Grant UC access:  
-     ```sql
-     GRANT READ FILES, WRITE FILES ON EXTERNAL LOCATION nlp_root TO `account users`; 
-     -- or to your UPN from: SELECT current_user();
-     ```
-     *(Metastore privilege v1.0 doesn’t need/allow `USAGE` on storage credential.)*
-  4. If an old External Location was tied to the default credential and blocked by dependencies, **drop schemas/tables** or **Force delete** the location, then recreate it with `cred_nlp_azmi`.
-  5. Ensure schema **managed locations** map to folders (do this at create time if ALTER isn’t supported):
-     ```sql
-     CREATE SCHEMA IF NOT EXISTS nlp_dev.bronze
-       MANAGED LOCATION 'abfss://nlp@<storage_account>.dfs.core.windows.net/bronze/';
-     ```
-  6. Verify a table’s physical location:  
-     ```sql
-     DESCRIBE DETAIL nlp_dev.bronze.some_table;  -- see 'location'
-     ```
-
-
----
-
-## Roadmap / TODO
-- [ ] Finish Phase 0 (UC + secret scope + cluster policy + MLflow smoke)  
-- [ ] Land dataset in `/raw` and wire **Autoloader** to **Bronze**  
-- [ ] Silver cleaning (text normalize)  
-- [ ] Baseline TF‑IDF + LR + MLflow registry  
-- [ ] Batch inference → predictions (Gold)  
-- [ ] dbt marts + dashboard screenshots  
-- [ ] Ops Copilot agent (drift/cost)  
-- [ ] Performance pass (OPTIMIZE/Z‑ORDER selectively)  
-- [ ] Cost optimizer + auto‑retrain proposal  
-- [ ] Stretch: Kafka streaming + DistilBERT + RAG
+- Add **LLM-based Ops Copilot** (Azure OpenAI) using the existing `agents.*` tables as context.
+- Add **drift detection** (PSI / KL) using `agents.prediction_stats`.
+- Compare **DistilBERT** vs LR:
+  - Accuracy vs cost/1k predictions.
+- Add **CI/CD** with Databricks Asset Bundles + GitHub Actions.
 
 ---
 
 ## License
-Choose one (e.g., MIT).
+
+MIT or similar (to be decided).
+
+
+
